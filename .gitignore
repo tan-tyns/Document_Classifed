@@ -1,0 +1,33 @@
+# --- CẤU HÌNH HỆ ĐIỀU HÀNH & IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# --- BACKEND (PYTHON) ---
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env                # QUAN TRỌNG: Đừng bao giờ up file chứa API KEY/PASSWORD lên!
+data/raw/
+data/interim/
+debug_boxes.jpg
+debug_sau_xu_ly.jpg
+
+# --- FRONTEND (REACT/VITE) ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# --- DỮ LIỆU CẤU HÌNH & TẠM ---
+*.sqlite
+*.db
+tmp/
+
+admin_doc_classifier/src/models/
