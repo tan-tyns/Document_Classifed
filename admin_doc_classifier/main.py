@@ -17,7 +17,7 @@ from src.utils.image_io import imread, load_image
 from paddleocr import PaddleOCR
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
-from information_extraction import info_extractor
+from src.core.information_extraction import info_extractor
 from src.core.nlp_engine import phobert_engine  # Tích hợp PhoBERT Classifier
 
 # =================================================================
