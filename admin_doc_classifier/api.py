@@ -28,15 +28,16 @@ from vietocr.tool.config import Cfg
 from src.core.information_extraction import info_extractor
 from src.core.nlp_engine import phobert_engine
 from pydantic import BaseModel
+from typing import Optional, Any
 
 # =================================================================
 # 1. KHỞI TẠO FASTAPI & CORS
 # =================================================================
-app = FastAPI(title="Classify Doc AI - API Server") # 🔥 Khởi tạo app trước
+app = FastAPI(title="Classify Doc AI - API Server")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Mở CORS cho Frontend React (cổng 5173)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,18 +45,70 @@ app.add_middleware(
 
 UPLOADS_DIR = os.path.join(ROOT_DIR, "uploads")
 AVATAR_DIR = os.path.join(UPLOADS_DIR, "avatars")
+DOCS_DIR = os.path.join(UPLOADS_DIR, "docs")
 os.makedirs(AVATAR_DIR, exist_ok=True)
+os.makedirs(DOCS_DIR, exist_ok=True)
 
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 @app.on_event("startup")
 async def startup_event():
     await db_manager.connect()
+    await _ensure_delete_requests_table()
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await db_manager.disconnect()
 
+async def _ensure_delete_requests_table():
+    """Tự động tạo bảng delete_requests nếu chưa tồn tại, kiểm tra bảng documents trước"""
+    try:
+        async with db_manager.pool.acquire() as connection:
+            # 1. Kiểm tra bảng documents có tồn tại không
+            table_exists = await connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'documents');"
+            )
+            if not table_exists:
+                # Tạo bảng documents tối giản (nếu chưa có)
+                await connection.execute("""
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        user_id INTEGER,
+                        source_file TEXT,
+                        file_path TEXT,
+                        raw_text TEXT,
+                        content TEXT,
+                        label TEXT,
+                        confidence FLOAT,
+                        doc_type TEXT,
+                        doc_date TEXT,
+                        so_hieu TEXT,
+                        noi_ban_hanh TEXT,
+                        trich_yeu TEXT,
+                        status TEXT DEFAULT 'COMPLETED',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                print("✅ Bảng documents đã được tạo (nếu chưa có).")
+
+            # 2. Tạo bảng document_delete_requests (bỏ khóa ngoại tạm thời để tránh lỗi)
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS document_delete_requests (
+                    id SERIAL PRIMARY KEY,
+                    doc_id UUID,   -- không khóa ngoại để đảm bảo tạo thành công
+                    requested_by INTEGER,
+                    reason TEXT,
+                    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+                    reviewed_by INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            print("✅ Bảng document_delete_requests sẵn sàng (không ràng buộc khóa ngoại).")
+    except Exception as e:
+        print(f"⚠️ Lỗi tạo bảng delete_requests: {e}")
+        
 # =================================================================
 # 2. KHỞI TẠO CÁC MÔ HÌNH AI
 # =================================================================
@@ -191,22 +244,41 @@ class UpdateDocumentRequest(BaseModel):
     date: str
     trichYeu: str
     content: str
-    edited_by: str = None
+    noiBanHanh: Optional[str] = ""
+    edited_by: Optional[Any] = None  # Chấp nhận cả int lẫn str từ frontend
 
 class UpdateProfileRequest(BaseModel):
     email: str
     full_name: str
-    date_of_birth: str = None
-    phone_number: str = None
+    date_of_birth: Optional[str] = None
+    phone_number: Optional[str] = None
     gender: str = "Khác"
-    address: str = None
+    address: Optional[str] = None
 
 class UpdatePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
+class DeleteRequestPayload(BaseModel):
+    requested_by: int
+    reason: Optional[str] = ""
+
+class ApproveDeletePayload(BaseModel):
+    approved_by: int
+
+class RejectDeletePayload(BaseModel):
+    rejected_by: int
+
+class AdminUpdateUserRequest(BaseModel):
+    fullName: Optional[str] = None
+    email: Optional[str] = None
+    phoneNumber: Optional[str] = None
+    address: Optional[str] = None
+    role: str
+    requestByRole: str # Role của người đang thao tác
+
 # =================================================================
-# ENDPOINTS
+# ENDPOINTS AUTH
 # =================================================================
 @app.post("/auth/register")
 async def register_api(payload: RegisterRequest):
@@ -229,7 +301,10 @@ async def login_api(payload: LoginRequest):
     if not user_data:
         raise HTTPException(status_code=401, detail="Tài khoản hoặc mật khẩu không chính xác!")
     return {"message": "Đăng nhập thành công!", "user": user_data}
-    
+
+# =================================================================
+# ENDPOINTS USER PROFILE
+# =================================================================
 @app.put("/users/{user_id}/profile")
 async def update_profile_endpoint(user_id: int, payload: UpdateProfileRequest):
     try:
@@ -242,28 +317,18 @@ async def update_profile_endpoint(user_id: int, payload: UpdateProfileRequest):
 
 @app.post("/users/{user_id}/avatar")
 async def upload_avatar_endpoint(user_id: int, file: UploadFile = File(...)):
-    # Kiểm tra định dạng file
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File tải lên phải là hình ảnh!")
-
-    # Tạo tên file duy nhất tránh trùng lặp (vd: avatar_1_1719223200.png)
     file_extension = os.path.splitext(file.filename)[1]
     unique_filename = f"avatar_{user_id}_{int(time.time())}{file_extension}"
     file_path = os.path.join(AVATAR_DIR, unique_filename)
-
     try:
-        # Lưu file vào ổ đĩa
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-
-        # Tạo đường dẫn URL tĩnh để trả về frontend
         avatar_url = f"http://localhost:8000/uploads/avatars/{unique_filename}"
-
-        # Cập nhật đường dẫn avatar vào Database
         success = await db_manager.update_user_avatar(user_id, avatar_url)
         if not success:
             raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
-
         return {"message": "Cập nhật ảnh đại diện thành công!", "avatar_url": avatar_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi upload: {str(e)}")
@@ -277,18 +342,25 @@ async def update_password_endpoint(user_id: int, payload: UpdatePasswordRequest)
         return {"message": message}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
+# =================================================================
+# ENDPOINTS DOCUMENTS
+# =================================================================
 @app.post("/process")
 async def process_document_api(file: UploadFile = File(...), user_id: str = Form(None)):
     start_time = time.time()
-    temp_dir = tempfile.mkdtemp()
-    temp_file_path = os.path.join(temp_dir, file.filename)
+    
+    file_extension = os.path.splitext(file.filename)[1]
+    unique_filename = f"doc_{int(time.time())}{file_extension}"
+    saved_file_path = os.path.join(DOCS_DIR, unique_filename)
     
     try:
-        with open(temp_file_path, "wb") as buffer:
+        with open(saved_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
-        pages = load_image(temp_file_path)
+        document_url = f"http://localhost:8000/uploads/docs/{unique_filename}"
+            
+        pages = load_image(saved_file_path)
         if not pages:
             raise HTTPException(status_code=400, detail="Không có trang ảnh nào để xử lý.")
 
@@ -386,12 +458,11 @@ async def process_document_api(file: UploadFile = File(...), user_id: str = Form
         doc_date = extracted_info.get('ngay_thang_nam', 'Không xác định')
         label = phobert_result['label']
         confidence = phobert_result['confidence']
-        mock_file_path = f"/uploads/{file.filename}"
         
         document_id = await db_manager.save_document(
             user_id=user_id,
             source_file=file.filename,
-            file_path=mock_file_path,
+            file_path=document_url,
             raw_text=full_document_text,
             content=corrected_text,
             label=label,
@@ -402,10 +473,19 @@ async def process_document_api(file: UploadFile = File(...), user_id: str = Form
             noi_ban_hanh=extracted_info.get('thanh_pho', ''),
             trich_yeu=extracted_info.get('trich_yeu', '')
         )
+        
         return {
-            "id": str(document_id), "text": full_document_text, "content": corrected_text,
-            "label": label, "confidence": confidence, "docType": doc_type, "date": doc_date,
-            "soHieu": extracted_info.get('so_hieu', ''), "trichYeu": extracted_info.get('trich_yeu', ''),
+            "id": str(document_id), 
+            "fileName": file.filename,
+            "filePath": document_url,
+            "text": full_document_text, 
+            "content": corrected_text,
+            "label": label, 
+            "confidence": confidence, 
+            "docType": doc_type, 
+            "date": doc_date,
+            "soHieu": extracted_info.get('so_hieu', ''), 
+            "trichYeu": extracted_info.get('trich_yeu', ''),
             "noiBanHanh": extracted_info.get('thanh_pho', '')
         }
 
@@ -413,36 +493,35 @@ async def process_document_api(file: UploadFile = File(...), user_id: str = Form
         raise HTTPException(status_code=400, detail="File này đã tồn tại trong hệ thống.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
 
 @app.get("/documents")
 async def get_all_documents_endpoint(user_id: int = None, role: str = "employee"):
-    """Lấy danh sách văn bản từ DB theo phân quyền người dùng và giữ nguyên Key CamelCase cho React"""
+    """Lấy danh sách văn bản từ DB theo phân quyền, kèm tên người upload cho admin/manager"""
     try:
         async with db_manager.pool.acquire() as connection:
             if role in ['admin', 'manager']:
-                # Admin và Manager được xem toàn bộ kho dữ liệu
                 query = """
-                    SELECT id, source_file, file_path, raw_text, content, label, 
-                           confidence, doc_type, doc_date, so_hieu, noi_ban_hanh, trich_yeu, user_id
-                    FROM documents 
-                    ORDER BY created_at DESC;
+                    SELECT d.id, d.source_file, d.file_path, d.raw_text, d.content, d.label, 
+                           d.confidence, d.doc_type, d.doc_date, d.so_hieu, d.noi_ban_hanh, 
+                           d.trich_yeu, d.user_id,
+                           COALESCE(p.full_name, u.username) as uploader_name
+                    FROM documents d
+                    LEFT JOIN users u ON d.user_id = u.id
+                    LEFT JOIN user_profiles p ON d.user_id = p.user_id
+                    ORDER BY d.created_at DESC;
                 """
                 records = await connection.fetch(query)
             else:
-                # Employee chỉ được xem văn bản do chính mình up lên
                 query = """
-                    SELECT id, source_file, file_path, raw_text, content, label, 
-                           confidence, doc_type, doc_date, so_hieu, noi_ban_hanh, trich_yeu, user_id
-                    FROM documents 
-                    WHERE user_id = $1
-                    ORDER BY created_at DESC;
+                    SELECT d.id, d.source_file, d.file_path, d.raw_text, d.content, d.label, 
+                           d.confidence, d.doc_type, d.doc_date, d.so_hieu, d.noi_ban_hanh, 
+                           d.trich_yeu, d.user_id, NULL as uploader_name
+                    FROM documents d
+                    WHERE d.user_id = $1
+                    ORDER BY d.created_at DESC;
                 """
                 records = await connection.fetch(query, user_id)
             
-            # 🔥 CHUYỂN ĐỔI THỦ CÔNG ĐỂ GIỮ NGUYÊN KIỂU CHỮ CAMELCASE CHO FRONTEND REACT
             processed_documents = []
             for r in records:
                 processed_documents.append({
@@ -458,7 +537,8 @@ async def get_all_documents_endpoint(user_id: int = None, role: str = "employee"
                     "soHieu": r["so_hieu"] or "",
                     "noiBanHanh": r["noi_ban_hanh"] or "",
                     "trichYeu": r["trich_yeu"] or "",
-                    "user_id": r["user_id"]
+                    "user_id": r["user_id"],
+                    "uploaderName": r["uploader_name"] or ""
                 })
             
             return processed_documents
@@ -466,6 +546,106 @@ async def get_all_documents_endpoint(user_id: int = None, role: str = "employee"
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi tải dữ liệu kho lưu trữ: {str(e)}")
     
+# =================================================================
+# ENDPOINTS YÊU CẦU XÓA — ĐẶT TRƯỚC /{doc_id} ĐỂ TRÁNH CONFLICT ROUTE
+# =================================================================
+
+@app.get("/documents/delete-requests")
+async def get_delete_requests():
+    """Lấy danh sách tất cả yêu cầu xóa (cho manager/admin)"""
+    try:
+        async with db_manager.pool.acquire() as connection:
+            query = """
+                SELECT r.id, r.doc_id::text, r.requested_by, r.reason, r.status,
+                       r.reviewed_by, r.created_at,
+                       COALESCE(p.full_name, u.username) as requester_name
+                FROM document_delete_requests r
+                LEFT JOIN users u ON r.requested_by = u.id
+                LEFT JOIN user_profiles p ON r.requested_by = p.user_id
+                ORDER BY r.created_at DESC;
+            """
+            records = await connection.fetch(query)
+            return [
+                {
+                    "id": r["id"],
+                    "doc_id": r["doc_id"],
+                    "requested_by": r["requested_by"],
+                    "requester_name": r["requester_name"] or f"User #{r['requested_by']}",
+                    "reason": r["reason"] or "",
+                    "status": r["status"],
+                    "reviewed_by": r["reviewed_by"],
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else ""
+                }
+                for r in records
+            ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi tải danh sách yêu cầu: {str(e)}")
+
+@app.post("/documents/delete-requests/{request_id}/approve")
+async def approve_delete_request(request_id: int, payload: ApproveDeletePayload):
+    """Manager/Admin phê duyệt yêu cầu xóa → xóa văn bản vĩnh viễn"""
+    import uuid
+    try:
+        async with db_manager.pool.acquire() as connection:
+            # Lấy thông tin yêu cầu
+            req = await connection.fetchrow(
+                "SELECT doc_id, status FROM document_delete_requests WHERE id = $1;",
+                request_id
+            )
+            if not req:
+                raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu.")
+            if req["status"] != "pending":
+                raise HTTPException(status_code=400, detail="Yêu cầu này đã được xử lí.")
+            
+            doc_id = req["doc_id"]
+            
+            async with connection.transaction():
+                # Cập nhật trạng thái yêu cầu
+                await connection.execute(
+                    """UPDATE document_delete_requests 
+                       SET status = 'approved', reviewed_by = $1, updated_at = CURRENT_TIMESTAMP 
+                       WHERE id = $2;""",
+                    payload.approved_by, request_id
+                )
+                # Xóa văn bản
+                await connection.execute("DELETE FROM documents WHERE id = $1;", doc_id)
+        
+        return {"message": "Đã phê duyệt và xóa văn bản thành công!", "doc_id": str(doc_id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi phê duyệt: {str(e)}")
+
+@app.post("/documents/delete-requests/{request_id}/reject")
+async def reject_delete_request(request_id: int, payload: RejectDeletePayload):
+    """Manager/Admin từ chối yêu cầu xóa"""
+    try:
+        async with db_manager.pool.acquire() as connection:
+            req = await connection.fetchrow(
+                "SELECT status FROM document_delete_requests WHERE id = $1;",
+                request_id
+            )
+            if not req:
+                raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu.")
+            if req["status"] != "pending":
+                raise HTTPException(status_code=400, detail="Yêu cầu này đã được xử lí.")
+            
+            await connection.execute(
+                """UPDATE document_delete_requests 
+                   SET status = 'rejected', reviewed_by = $1, updated_at = CURRENT_TIMESTAMP 
+                   WHERE id = $2;""",
+                payload.rejected_by, request_id
+            )
+        return {"message": "Đã từ chối yêu cầu xóa."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi từ chối: {str(e)}")
+
+# =================================================================
+# ENDPOINTS /{doc_id} — ĐẶT SAU static routes để tránh conflict
+# =================================================================
+
 @app.put("/documents/{doc_id}")
 async def update_document_endpoint(doc_id: str, payload: UpdateDocumentRequest):
     if not payload.content or payload.content.strip() == "":
@@ -474,8 +654,12 @@ async def update_document_endpoint(doc_id: str, payload: UpdateDocumentRequest):
         raise HTTPException(status_code=400, detail="Trích yếu không được để trống!")
 
     try:
-        success = await db_manager.update_document_from_archive(doc_id=doc_id, data=payload.dict(), edited_by=payload.edited_by)
-        if success: return {"message": "Cập nhật dữ liệu tài liệu thành công!"}
+        edited_by_str = str(payload.edited_by) if payload.edited_by is not None else None
+        success = await db_manager.update_document_from_archive(
+            doc_id=doc_id, data=payload.dict(), edited_by=edited_by_str
+        )
+        if success:
+            return {"message": "Cập nhật dữ liệu tài liệu thành công!"}
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu yêu cầu.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi cập nhật: {str(e)}")
@@ -488,7 +672,33 @@ async def delete_document_endpoint(doc_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa dữ liệu: {str(e)}")
 
+@app.post("/documents/{doc_id}/request-delete")
+async def request_delete_document(doc_id: str, payload: DeleteRequestPayload):
+    """Nhân viên gửi yêu cầu xóa văn bản, chờ quản lí phê duyệt"""
+    import uuid
+    try:
+        pg_doc_id = uuid.UUID(doc_id)
+        async with db_manager.pool.acquire() as connection:
+            existing = await connection.fetchrow(
+                "SELECT id FROM document_delete_requests WHERE doc_id = $1 AND status = 'pending';",
+                pg_doc_id
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="Đã có yêu cầu xóa đang chờ xử lí cho văn bản này.")
+            await connection.execute(
+                """INSERT INTO document_delete_requests (doc_id, requested_by, reason, status)
+                   VALUES ($1, $2, $3, 'pending');""",
+                pg_doc_id, payload.requested_by, payload.reason or ""
+            )
+        return {"message": "Đã gửi yêu cầu xóa. Chờ quản lí phê duyệt."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi gửi yêu cầu: {str(e)}")
 
+# =================================================================
+# ENDPOINTS USERS / EMPLOYEES
+# =================================================================
 @app.get("/users")
 async def get_all_employees_endpoint():
     """API lấy danh sách toàn bộ nhân sự chuẩn hóa"""
@@ -506,7 +716,6 @@ async def get_all_employees_endpoint():
             
             employee_list = []
             for r in records:
-                # Ép kiểu thời gian an toàn tránh lỗi format JavaScript
                 created_at_str = r["created_at"].strftime("%Y-%m-%d %H:%M:%S") if r["created_at"] else ""
                 dob_str = r["date_of_birth"].strftime("%Y-%m-%d") if r["date_of_birth"] else "Chưa cập nhật"
                 
@@ -527,6 +736,32 @@ async def get_all_employees_endpoint():
             return employee_list
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi kết nối cơ sở dữ liệu: {str(e)}")
+
+@app.put("/admin/users/{target_user_id}")
+async def admin_update_user_endpoint(target_user_id: int, payload: AdminUpdateUserRequest):
+    """API để Admin/Manager cập nhật thông tin nhân viên"""
+    # 1. Chặn bảo mật nếu người gửi không phải Admin hoặc Manager
+    if payload.requestByRole not in ['admin', 'manager']:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền thực hiện thao tác này.")
+    
+    try:
+        # Gọi hàm xử lý đã viết ở database.py
+        await db_manager.admin_update_user(target_user_id, payload.dict(), payload.requestByRole)
+        return {"message": "Cập nhật thông tin nhân sự thành công!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/admin/users/{target_user_id}")
+async def admin_delete_user_endpoint(target_user_id: int, requesterRole: str):
+    """API để Admin xóa nhân sự"""
+    if requesterRole != 'admin':
+        raise HTTPException(status_code=403, detail="Từ chối truy cập: Chỉ Admin mới có quyền xóa tài khoản.")
+    
+    try:
+        await db_manager.admin_delete_user(target_user_id)
+        return {"message": "Xóa nhân viên thành công!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -7,7 +7,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 # =====================================================================
 # PHẢI ĐỒNG BỘ VỚI 3_train_model.py VÀ 4_test_model.py
 # =====================================================================
-HEADER_CHARS  = 800
+HEADER_CHARS  = 500
 SNIPPET_CHARS = 300
 
 

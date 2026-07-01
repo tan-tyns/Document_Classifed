@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Flower2, FileSearch, Settings as SettingsIcon } from 'lucide-react';
+import { Flower2, FileSearch, Settings as SettingsIcon, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import Auth from './pages/Auth';
 import OCRStation from './pages/OCRStation';
 import Archive from './pages/Archive';
@@ -23,7 +23,20 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard'); 
   const [archivedDocs, setArchivedDocs] = useState([]);
 
-  // --- 🔥 ĐƯA LOGIC FETCH DỮ LIỆU RA APP TỔNG ĐỂ ĐỒNG BỘ CHO CẢ DASHBOARD & HEADER ---
+  // --- 🔥 QUAN TRỌNG: STATE QUẢN LÝ TOAST NOTIFICATION ---
+  const [toasts, setToasts] = useState([]);
+
+  // Hàm kích hoạt hiển thị Toast từ các component con
+  const showToast = (message, type = 'success') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    
+    // Tự động xóa thông báo sau 3 giây để giải phóng giao diện
+    setTimeout(() => {
+      setToasts(prev => prev.filter(toast => toast.id !== id));
+    }, 3000);
+  };
+
   useEffect(() => {
     const fetchArchiveData = async () => {
       if (!isAuthenticated || !user?.id) return;
@@ -45,6 +58,7 @@ export default function App() {
   const handleLogin = (userData) => {
     setUser(userData);
     setIsAuthenticated(true);
+    showToast(`Chào mừng ${userData.username} đã quay trở lại!`, 'success');
   };
 
   const handleLogout = () => {
@@ -52,6 +66,7 @@ export default function App() {
     setUser({ username: '', email: '' });
     setArchivedDocs([]);
     setActiveTab('dashboard'); 
+    showToast("Đã đăng xuất tài khoản thành công.", 'info');
   };
 
   const handleArchiveSave = (finalDocData) => { 
@@ -64,80 +79,158 @@ export default function App() {
       }
       return [finalDocData, ...prev];
     });
-    alert("Đã lưu tài liệu thành công vào Kho Lưu Trữ!");
   };
 
-  if (!isAuthenticated) {
-    return <Auth onLogin={handleLogin} t={t} />;
-  }
-
   return (
-    <div className={`min-h-screen ${t.bg} ${t.text} transition-all duration-500 font-sans flex flex-col`}>
-      <Header 
-        user={user}
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab}
-        archivedCount={archivedDocs.length} // Số lượng hiển thị trên Badge tự động nhảy số theo DB
-        onLogout={handleLogout}
+  <>
+    {!isAuthenticated ? (
+
+      <Auth
+        onLogin={handleLogin}
         t={t}
-        currentTheme={currentTheme}
-        setCurrentTheme={setCurrentTheme}
-        themes={themes}
+        showToast={showToast}
       />
 
-      {/* ĐIỀU HƯỚNG CÁC TRANG DỰA VÀO TAB */}
-      <main className="flex-1 flex flex-col overflow-hidden min-h-0">
-        {activeTab === 'dashboard' && (
-          <Dashboard 
-            archivedDocs={archivedDocs} 
-            user={user}
-            t={t} 
-          />
-        )}
+    ) : (
 
-        {activeTab === 'ocr' && (
-          <OCRStation 
-            onArchiveSave={handleArchiveSave} 
-            t={t} 
-            user={user} 
-          />
-        )}
+      <div
+        className={`min-h-screen ${t.bg} ${t.text} transition-all duration-500 font-sans flex flex-col relative`}
+      >
 
-        {activeTab === 'archive' && (
-          <Archive 
-            archivedDocs={archivedDocs} 
-            setArchivedDocs={setArchivedDocs} 
-            user={user} 
-            t={t} 
-          />
-        )}
+        <Header
+          user={user}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          archivedCount={archivedDocs.length}
+          onLogout={handleLogout}
+          t={t}
+          currentTheme={currentTheme}
+          setCurrentTheme={setCurrentTheme}
+          themes={themes}
+        />
 
-        {/* 🔥 ĐÃ BỔ SUNG: Khối code điều hướng render trang Nhân Sự */}
-        {activeTab === 'employees' && (
-          <Employees 
-            user={user} 
-            t={t} 
-          />
-        )}
+        <main className="flex-1 flex flex-col overflow-hidden min-h-0">
 
-        {activeTab === 'settings' && (
-          <SettingsPage 
-            user={user} 
-            setUser={setUser} 
-            t={t} 
-            currentTheme={currentTheme} 
-            setCurrentTheme={setCurrentTheme} 
-            themes={themes} 
-          />
-        )}
-      </main>
+          {activeTab === 'dashboard' && (
+            <Dashboard
+              archivedDocs={archivedDocs}
+              user={user}
+              t={t}
+            />
+          )}
 
-      <style dangerouslySetInnerHTML={{__html: `
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { bg: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 999px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
-      `}} />
+
+          {activeTab === 'ocr' && (
+            <OCRStation
+              onArchiveSave={handleArchiveSave}
+              t={t}
+              user={user}
+              showToast={showToast}
+            />
+          )}
+
+
+          {activeTab === 'archive' && (
+            <Archive
+              archivedDocs={archivedDocs}
+              setArchivedDocs={setArchivedDocs}
+              user={user}
+              t={t}
+              showToast={showToast}
+            />
+          )}
+
+
+          {activeTab === 'employees' && (
+            <Employees
+              user={user}
+              t={t}
+              showToast={showToast}
+            />
+          )}
+
+
+          {activeTab === 'settings' && (
+            <SettingsPage
+              user={user}
+              setUser={setUser}
+              t={t}
+              currentTheme={currentTheme}
+              setCurrentTheme={setCurrentTheme}
+              themes={themes}
+              showToast={showToast}
+            />
+          )}
+
+        </main>
+
+      </div>
+
+    )}
+
+
+    {/* ======================= */}
+    {/* TOAST CONTAINER */}
+    {/* ======================= */}
+
+    <div className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-3 max-w-sm w-full">
+
+      {toasts.map(toast => (
+
+        <div
+          key={toast.id}
+          className={`
+          flex items-center gap-3
+          px-4 py-3 rounded-2xl
+          shadow-xl border
+          animate-in slide-in-from-right-5 duration-300
+          ${
+            toast.type === 'success'
+              ? 'bg-green-50 border-green-300 text-green-700'
+
+            : toast.type === 'error'
+              ? 'bg-red-50 border-red-300 text-red-700'
+
+            : 'bg-blue-50 border-blue-300 text-blue-700'
+          }
+          `}
+        >
+
+          {toast.type === 'success' &&
+            <CheckCircle2 size={18} />
+          }
+
+          {toast.type === 'error' &&
+            <XCircle size={18} />
+          }
+
+          {toast.type === 'info' &&
+            <AlertCircle size={18} />
+          }
+
+
+          <span className="flex-1">
+            {toast.message}
+          </span>
+
+
+          <button
+            onClick={() =>
+              setToasts(prev =>
+                prev.filter(t => t.id !== toast.id)
+              )
+            }
+          >
+            ✕
+          </button>
+
+        </div>
+
+      ))}
+
     </div>
-  );
+
+
+  </>
+);
 }

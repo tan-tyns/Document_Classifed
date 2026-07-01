@@ -228,24 +228,46 @@ class DatabaseManager:
 
         async with self.pool.acquire() as connection:
             async with connection.transaction():
-                old_record = await connection.fetchrow("SELECT content, trich_yeu, so_hieu, doc_type, date FROM documents WHERE id = $1;", pg_doc_id)
+                old_record = await connection.fetchrow(
+                    """
+                    SELECT
+                        content,
+                        trich_yeu,
+                        so_hieu,
+                        doc_type,
+                        doc_date,
+                        noi_ban_hanh
+                    FROM documents
+                    WHERE id = $1;
+                    """,
+                    pg_doc_id
+                )
                 
                 update_query = """
                     UPDATE documents SET
-                        content = $1, trich_yeu = $2, so_hieu = $3, doc_type = $4, doc_date = $5, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $6;
+                        content = $1, trich_yeu = $2, so_hieu = $3, doc_type = $4, doc_date = $5,noi_ban_hanh = $6, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $7;
                 """
                 await connection.execute(
-                    update_query, 
-                    data.get('content'), data.get('trichYeu'), data.get('soHieu'), 
-                    data.get('docType'), data.get('date'), pg_doc_id
+                    update_query,
+                    data.get('content'),
+                    data.get('trichYeu'),
+                    data.get('soHieu'),
+                    data.get('docType'),
+                    data.get('date'),
+                    data.get('noiBanHanh'),
+                    pg_doc_id
                 )
 
                 if old_record:
                     old_values = json.dumps(dict(old_record), ensure_ascii=False)
                     new_values = json.dumps({
-                        "content": data.get('content'), "trich_yeu": data.get('trichYeu'),
-                        "so_hieu": data.get('soHieu'), "doc_type": data.get('docType'), "date": data.get('date')
+                        "content": data.get('content'),
+                        "trich_yeu": data.get('trichYeu'),
+                        "so_hieu": data.get('soHieu'),
+                        "doc_type": data.get('docType'),
+                        "doc_date": data.get('date'),
+                        "noi_ban_hanh": data.get('noiBanHanh')
                     }, ensure_ascii=False)
 
                     log_query = """
@@ -265,5 +287,67 @@ class DatabaseManager:
         async with self.pool.acquire() as connection:
             await connection.execute(query, pg_doc_id)
             return True
+
+    async def admin_update_user(self, target_user_id, data, requester_role):
+        """Cho phép Admin hoặc Manager cập nhật thông tin thành viên khác"""
+        uid = int(target_user_id)
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                # 1. Cập nhật bảng 'users' 
+                # Nếu là admin thì được phép đổi cả role, nếu manager thì bỏ qua role.
+                if requester_role == 'admin':
+                    await connection.execute(
+                        "UPDATE users SET email = $1, role = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3;",
+                        data.get('email'), data.get('role'), uid
+                    )
+                else:
+                    await connection.execute(
+                        "UPDATE users SET email = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2;",
+                        data.get('email'), uid
+                    )
+
+                # 2. Cập nhật bảng 'user_profiles'
+                check_profile = await connection.fetchrow("SELECT user_id FROM user_profiles WHERE user_id = $1;", uid)
+                
+                if check_profile:
+                    await connection.execute(
+                        """UPDATE user_profiles SET 
+                            full_name = $1, phone_number = $2, address = $3, updated_at = CURRENT_TIMESTAMP
+                           WHERE user_id = $4;""",
+                        data.get('fullName'), data.get('phoneNumber'), data.get('address'), uid
+                    )
+                else:
+                    await connection.execute(
+                        """INSERT INTO user_profiles (user_id, full_name, phone_number, address, updated_at)
+                           VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP);""",
+                        uid, data.get('fullName'), data.get('phoneNumber'), data.get('address')
+                    )
+                return True
+        
+    async def admin_delete_user(self, target_user_id):
+        """Xóa hoàn toàn nhân viên, nhưng giữ lại các tài liệu họ đã số hóa cho Công ty"""
+        uid = int(target_user_id)
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                # 1. Xóa hồ sơ cá nhân
+                await connection.execute("DELETE FROM user_profiles WHERE user_id = $1;", uid)
+
+                # 2. Kiểm tra bảng document_delete_requests có tồn tại không
+                table_exists = await connection.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'document_delete_requests');"
+                )
+                if table_exists:
+                    await connection.execute(
+                        "DELETE FROM document_delete_requests WHERE requested_by = $1;", uid
+                    )
+
+                # 3. Chuyển quyền sở hữu tài liệu về NULL
+                await connection.execute(
+                    "UPDATE documents SET user_id = NULL WHERE user_id = $1;", uid
+                )
+
+                # 4. Xóa tài khoản
+                await connection.execute("DELETE FROM users WHERE id = $1;", uid)
+                return True
 
 db_manager = DatabaseManager()

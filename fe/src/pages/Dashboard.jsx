@@ -55,8 +55,8 @@ export default function Dashboard({ archivedDocs = [], user, t }) {
         {/* THẺ ĐỘ TIN CẬY TRÍCH XUẤT TRUNG BÌNH */}
         <div className={`${t.panel} p-6 rounded-3xl border ${t.border} shadow-lg flex items-center justify-between`}>
           <div>
-            <p className={`text-[10px] font-bold uppercase tracking-widest ${t.subtext} mb-1`}>Độ tin cậy AI nhận diện</p>
-            <h3 className="text-3xl font-black">98.5 <span className="text-sm font-bold opacity-50">%</span></h3>
+            <p className={`text-[10px] font-bold uppercase tracking-widest ${t.subtext} mb-1`}>Số lượng người dùng</p>
+            <h3 className="text-3xl font-black">4 <span className="text-sm font-bold opacity-50"></span></h3>
           </div>
           <div className="p-4 rounded-2xl bg-green-500/10 text-green-500"><TrendingUp size={24} /></div>
         </div>

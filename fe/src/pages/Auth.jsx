@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Lock, Mail } from 'lucide-react';
 
-export default function Auth({ onLogin, t }) {
+export default function Auth({ onLogin, t, showToast }) {
   const [authMode, setAuthMode] = useState('login'); 
   const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
@@ -23,7 +23,11 @@ export default function Auth({ onLogin, t }) {
         });
 
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Đăng nhập thất bại");
+        if (!response.ok) {
+          showToast(data.detail || "❌ Tài khoản hoặc mật khẩu không chính xác!", "error");
+          setLoading(false);
+          return;
+        }
 
         // 🔥 ĐÃ XÓA ALERT ĐĂNG NHẬP THÀNH CÔNG THEO YÊU CẦU
         onLogin(data.user); 
@@ -47,10 +51,12 @@ export default function Auth({ onLogin, t }) {
         });
 
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Đăng ký thất bại");
-
-        alert(data.message); // Giữ lại thông báo tạo tài khoản thành công
-        setAuthMode('login');
+        if (!response.ok){
+          showToast(data.detail || "❌ Đăng ký tài khoản thất bại!", "error");
+        } else {
+          showToast("🎉 Tạo tài khoản thành công! Bạn có thể đăng nhập ngay.", "success");
+          setAuthMode('login');
+        }
       }
     } catch (error) {
       alert("Lỗi: " + error.message);

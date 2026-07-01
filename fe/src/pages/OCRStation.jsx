@@ -1,20 +1,23 @@
+// src/pages/OCRStation.jsx
 import React, { useState } from 'react';
 import axios from 'axios';
-import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { 
   Upload, Loader2, CheckCircle2, FileText, Search, X, 
-  Image as ImageIconUI, FileSpreadsheet, Archive, CalendarDays, Bookmark, Trash2, Edit3, MapPin, FileSearch
+  Image as ImageIconUI, FileSpreadsheet, Bookmark, CalendarDays, Trash2, Edit3, MapPin, FileSearch, Save
 } from 'lucide-react';
 import EditModal from '../components/EditModal';
 
-export default function OCRStation({ onArchiveSave, t }) {
+export default function OCRStation({ onArchiveSave, t, user, showToast }) {
   const [files, setFiles] = useState([]);
   const [previews, setPreviews] = useState([]);
   const [results, setResults] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [editingIndex, setEditingIndex] = useState(null);
+  
+  // Trạng thái quản lý quá trình đồng bộ hàng loạt vào CSDL
+  const [savingAll, setSavingAll] = useState(false);
 
   const handleFileChange = (e) => {
     const selectedFiles = Array.from(e.target.files);
@@ -27,18 +30,27 @@ export default function OCRStation({ onArchiveSave, t }) {
   };
 
   const removeFile = (index) => {
-    const newFiles = [...files]; const newPreviews = [...previews];
-    newFiles.splice(index, 1); newPreviews.splice(index, 1);
-    setFiles(newFiles); setPreviews(newPreviews);
+    const newFiles = [...files]; 
+    const newPreviews = [...previews];
+    newFiles.splice(index, 1); 
+    newPreviews.splice(index, 1);
+    setFiles(newFiles); 
+    setPreviews(newPreviews);
+    
     if (results[index]) {
-      const newResults = [...results]; newResults.splice(index, 1); setResults(newResults);
+      const newResults = [...results]; 
+      newResults.splice(index, 1); 
+      setResults(newResults);
     }
     setCurrentIndex(Math.max(0, index - 1));
   };
 
   const clearAll = () => {
     if (window.confirm("Bạn có chắc chắn muốn xóa toàn bộ phiên làm việc này không?")) {
-      setFiles([]); setPreviews([]); setResults([]); setCurrentIndex(0);
+      setFiles([]); 
+      setPreviews([]); 
+      setResults([]); 
+      setCurrentIndex(0);
     }
   };
 
@@ -48,42 +60,138 @@ export default function OCRStation({ onArchiveSave, t }) {
     const startIndex = results.length;
 
     for (let i = startIndex; i < files.length; i++) {
-      const formData = new FormData(); formData.append('file', files[i]);
+      const formData = new FormData(); 
+      formData.append('file', files[i]);
+      if (user?.id) {
+        formData.append('user_id', String(user.id));
+      }
+      
       try {
         const response = await axios.post('http://localhost:8000/process', formData);
         setResults(prev => [...prev, {
-          id: `doc_${Date.now()}_${i}`,
+          id: response.data.id || `doc_${Date.now()}_${i}`,
           fileName: files[i].name,
-          text: response.data.text, label: response.data.label, confidence: response.data.confidence,
-          docType: response.data.docType, date: response.data.date, soHieu: response.data.soHieu || '',
-          noiBanHanh: response.data.noiBanHanh || '', trichYeu: response.data.trichYeu || '', content: response.data.content
+          filePath: response.data.filePath,
+          text: response.data.text, 
+          label: response.data.label, 
+          confidence: response.data.confidence,
+          docType: response.data.docType, 
+          date: response.data.date, 
+          soHieu: response.data.soHieu || '',
+          noiBanHanh: response.data.noiBanHanh || '', 
+          trichYeu: response.data.trichYeu || '', 
+          content: response.data.content,
+          isSavedToDb: true
         }]);
         setCurrentIndex(i);
       } catch (err) {
         setResults(prev => [...prev, {
-          id: `err_${Date.now()}_${i}`, fileName: files[i].name,
-          text: "⚠️ LỖI: Backend Python chưa phản hồi.", label: "ERROR", confidence: 0, docType: "KHONG_XAC_DINH", 
-          date: "KHONG_XAC_DINH", soHieu: "", noiBanHanh: "", trichYeu: "", content: ""
+          id: `err_${Date.now()}_${i}`, 
+          fileName: files[i].name,
+          text: "⚠️ LỖI: Backend Python chưa phản hồi.", 
+          label: "ERROR", 
+          confidence: 0, 
+          docType: "KHONG_XAC_DINH", 
+          date: "KHONG_XAC_DINH", 
+          soHieu: "", 
+          noiBanHanh: "", 
+          trichYeu: "", 
+          content: ""
         }]);
       }
     }
     setLoading(false);
   };
 
-  const exportToCSV = () => { /* Giống code cũ */ };
-  const exportToZIP = async () => { /* Giống code cũ */ };
+  // --- 🔥 TÍNH NĂNG 1: ĐỒNG BỘ TOÀN BỘ DANH SÁCH SANG KHO LƯU TRỮ ---
+  const handleSaveAllToArchive = () => {
+    const validResults = results.filter(res => res.label !== "ERROR");
+    if (validResults.length === 0) {
+      showToast("⚠️ Không có dữ liệu trích xuất hợp lệ để lưu!", "error");
+      return;
+    }
+    
+    setSavingAll(true);
+    try {
+      validResults.forEach(doc => {
+        onArchiveSave(doc);
+      });
+      showToast(`✅ Đã đồng bộ ${validResults.length} tài liệu vào Kho Lưu Trữ!`, "success");
+    } catch (error) {
+      showToast("❌ Lỗi đồng bộ: " + error.message, "error");
+    } finally {
+      setSavingAll(false);
+    }
+  };
+
+  // --- 🔥 TÍNH NĂNG 2: XUẤT CSV RIÊNG BIỆT CHO PHIÊN LÀM VIỆC OCR ---
+  const exportCurrentSessionToCSV = () => {
+    const validResults = results.filter(res => res.label !== "ERROR");
+    if (validResults.length === 0) {
+      showToast("⚠️ Chưa có dữ liệu để xuất Excel!", "error");
+      return;
+    }
+
+    let csvContent = "\uFEFFTên File,Nơi Ban Hành,Loại Văn Bản,Số Hiệu,Ngày Ban Hành,Trích Yếu,Nội Dung Trích Xuất\n";
+    validResults.forEach(r => {
+      const safeContent = r.content ? r.content.replace(/"/g, '""').replace(/\n/g, ' ') : "";
+      const safeTrichYeu = r.trichYeu ? r.trichYeu.replace(/"/g, '""').replace(/\n/g, ' ') : "";
+      const safeNoiBH = r.noiBanHanh ? r.noiBanHanh.replace(/"/g, '""') : "";
+      const safeSoHieu = r.soHieu ? r.soHieu.replace(/"/g, '""') : "";
+      
+      csvContent += `"${r.fileName}","${safeNoiBH}","${r.docType}","${safeSoHieu}","${r.date}","${safeTrichYeu}","${safeContent}"\n`;
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    saveAs(blob, `OCR_PhienLamViec_${Date.now()}.csv`);
+  };
 
   const openEditModal = (idx) => {
-    if (!results[idx]) { alert("Vui lòng chạy trích xuất AI trước khi chỉnh sửa file này!"); return; }
-    if (results[idx].label === "ERROR") { alert("File này bị lỗi, không có dữ liệu để sửa!"); return; }
+    if (!results[idx]) { 
+      showToast("Vui lòng chạy trích xuất AI trước!", "error"); 
+      return; 
+    }
+    if (results[idx].label === "ERROR") { 
+      showToast("File này bị lỗi, không có dữ liệu để sửa!", "error"); 
+      return; 
+    }
     setEditingIndex(idx);
   };
 
-  const handleSaveEdit = (updatedDoc) => {
+  const handleSaveEdit = async (updatedDoc) => {
+    // Gọi API PUT để lưu lên DB trước
+    if (updatedDoc.id && !updatedDoc.id.startsWith('err_')) {
+      try {
+        const res = await fetch(`http://localhost:8000/documents/${updatedDoc.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            docType:    updatedDoc.docType    || '',
+            soHieu:     updatedDoc.soHieu     || '',
+            date:       updatedDoc.date       || '',
+            trichYeu:   updatedDoc.trichYeu   || '',
+            content:    updatedDoc.content    || '',
+            noiBanHanh: updatedDoc.noiBanHanh || '',
+            edited_by:  user?.id ? String(user.id) : null,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          showToast('❌ Lưu thất bại: ' + (err.detail || 'Lỗi server'), 'error');
+          return;
+        }
+        showToast('✅ Đã lưu chỉnh sửa thành công!', 'success');
+      } catch (e) {
+        showToast('❌ Lỗi kết nối: ' + e.message, 'error');
+        return;
+      }
+    }
+
+    // Sau khi DB thành công → update state local
     const updatedResults = [...results];
     updatedResults[editingIndex] = updatedDoc;
     setResults(updatedResults);
-    onArchiveSave(updatedDoc); // Đẩy qua App.jsx lưu vào Kho
+    onArchiveSave(updatedDoc);
     setEditingIndex(null);
   };
 
@@ -91,12 +199,15 @@ export default function OCRStation({ onArchiveSave, t }) {
 
   return (
     <main className="max-w-[1600px] w-full mx-auto p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 flex-1 overflow-hidden min-h-0 animate-in fade-in duration-300">
+      
+      {/* CỘT TRÁI: NẠP DỮ LIỆU ĐẦU VÀO */}
       <section className="flex flex-col gap-4 overflow-hidden min-h-0">
         <div className={`${t.panel} rounded-3xl ${t.border} border p-4 lg:p-6 flex-1 flex flex-col shadow-2xl overflow-hidden min-h-0`}>
           <div className="flex justify-between items-center mb-4 shrink-0">
             <h2 className={`text-xs font-black ${t.subtext} uppercase tracking-widest flex items-center gap-2`}><Upload size={16} className={t.accent} /> Nạp dữ liệu ({files.length} file)</h2>
             {files.length > 0 && !loading && <button onClick={clearAll} className="flex items-center gap-1 text-[10px] font-bold text-red-500 hover:text-red-400 bg-red-500/10 px-3 py-1.5 rounded-lg transition-colors uppercase"><Trash2 size={12} /> Xóa tất cả</button>}
           </div>
+          
           <div className={`flex-1 min-h-0 border-2 border-dashed ${t.border} rounded-2xl relative bg-black/5 flex flex-col overflow-hidden transition-all`}>
             {files.length > 0 ? (
               <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
@@ -116,6 +227,7 @@ export default function OCRStation({ onArchiveSave, t }) {
               <label className="text-center w-full h-full flex flex-col items-center justify-center cursor-pointer group-hover:scale-105 transition-transform"><div className={`w-20 h-20 lg:w-24 lg:h-24 rounded-full flex items-center justify-center mx-auto mb-4 lg:mb-6 bg-white/5 border ${t.border}`}><ImageIconUI className={`${t.subtext}`} size={40} /></div><p className={`${t.subtext} font-bold text-base lg:text-lg uppercase tracking-tighter`}>Kéo thả Ảnh / PDF</p><p className="text-[10px] opacity-40 mt-2">Hỗ trợ cộng dồn vô hạn số lượng file</p><input type="file" multiple className="hidden" accept=".jpg,.jpeg,.png,.pdf" onChange={handleFileChange} /></label>
             )}
           </div>
+          
           <button onClick={processDocument} disabled={files.length === 0 || loading || results.length === files.length} className={`mt-4 lg:mt-6 w-full py-4 ${t.button} font-black rounded-2xl ${t.shadow} transition-all flex justify-center items-center gap-3 text-base lg:text-lg uppercase tracking-widest active:scale-95 disabled:opacity-30 shrink-0`}>
             {loading ? <Loader2 className="animate-spin" /> : <CheckCircle2 size={20} />}
             {loading ? `Đang xử lý (${results.length}/${files.length})...` : results.length === files.length && files.length > 0 ? "Tất cả file đã hoàn tất" : "Bắt đầu trích xuất"}
@@ -123,25 +235,37 @@ export default function OCRStation({ onArchiveSave, t }) {
         </div>
       </section>
 
+      {/* CỘT PHẢI: HIỂN THỊ CHI TIẾT KẾT QUẢ VÀ CÁC THAO TÁC HÀNG LOẠT */}
       <section className="flex flex-col gap-4 overflow-hidden min-h-0">
-        <div className="flex justify-between items-end gap-4 shrink-0">
-          <div className={`flex gap-2 overflow-x-auto pb-2 custom-scrollbar flex-1`}>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shrink-0">
+          <div className={`flex gap-2 overflow-x-auto pb-2 custom-scrollbar flex-1 w-full`}>
             {results.map((res, idx) => <button key={idx} onClick={() => setCurrentIndex(idx)} className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap border transition-colors ${currentIndex === idx ? `${t.button.split(' ')[0]} border-transparent ${t.shadow}` : `${t.panel} ${t.border} ${t.subtext} hover:bg-white/5`}`}>📄 File {idx + 1}</button>)}
           </div>
+          
+          {/* NÚT XUẤT CSV PHIÊN (CHỈ HIỂN THỊ KHI TẤT CẢ FILE ĐÃ ĐƯỢC XỬ LÝ XONG) */}
+          {files.length > 0 && results.length === files.length && (
+            <button 
+              onClick={exportCurrentSessionToCSV} 
+              className="px-3 py-2 flex items-center gap-1.5 rounded-xl text-[11px] font-black bg-green-600/10 text-green-500 border border-green-500/20 hover:bg-green-600 hover:text-white transition-all whitespace-nowrap uppercase tracking-wider shadow-sm"
+            >
+              <FileSpreadsheet size={14} /> Xuất Excel phiên
+            </button>
+          )}
         </div>
 
         <div className={`${t.panel} rounded-3xl border ${t.border} p-4 lg:p-6 shadow-2xl shrink-0`}>
           <div className="flex justify-between items-center mb-4">
             <h2 className={`text-xs font-black ${t.subtext} uppercase flex items-center gap-2`}><FileText size={16} className={t.accent} />Nội dung trích xuất</h2>
-            {currentResult && currentResult.label !== "ERROR" && <button onClick={() => openEditModal(currentIndex)} className={`flex items-center gap-1 text-[10px] uppercase font-bold px-3 py-1.5 ${t.button} rounded-lg transition-transform active:scale-95`}><Edit3 size={12} /> Kiểm tra & Lưu</button>}
+            {currentResult && currentResult.label !== "ERROR" && <button onClick={() => openEditModal(currentIndex)} className={`flex items-center gap-1 text-[10px] uppercase font-bold px-3 py-1.5 ${t.button} rounded-lg transition-transform active:scale-95`}><Edit3 size={12} /> Sửa đổi trường</button>}
           </div>
+          
           {currentResult ? (
             <div className="w-full grid grid-cols-2 xl:grid-cols-3 gap-2.5 lg:gap-3">
-              <div className={`flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border ${t.border} border-white/5`}><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><MapPin size={10} /> Nơi ban hành</div><span className={`font-bold text-sm tracking-wide ${currentResult.label === "ERROR" ? "text-red-500" : t.text} truncate`}>{currentResult.noiBanHanh || "Chưa xác định"}</span></div>
-              <div className={`flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border ${t.border} border-white/5`}><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><Bookmark size={10} /> Loại văn bản</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.docType === "KHONG_XAC_DINH" ? "Chưa xác định" : currentResult.docType}</span></div>
-              <div className={`flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border ${t.border} border-white/5`}><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><CalendarDays size={10} /> Ngày ban hành</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.date === "KHONG_XAC_DINH" ? "Không tìm thấy" : currentResult.date}</span></div>
-              <div className={`flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border ${t.border} border-white/5`}><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><FileSearch size={10} /> Số hiệu</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.soHieu || "Chưa có số hiệu"}</span></div>
-              <div className={`col-span-2 flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border ${t.border} border-white/5`}><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><FileText size={10} /> Trích yếu</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.trichYeu || "Chưa có trích yếu"}</span></div>
+              <div className="flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border border-white/5"><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><MapPin size={10} /> Nơi ban hành</div><span className={`font-bold text-sm tracking-wide ${currentResult.label === "ERROR" ? "text-red-500" : t.text} truncate`}>{currentResult.noiBanHanh || "Chưa xác định"}</span></div>
+              <div className="flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border border-white/5"><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><Bookmark size={10} /> Loại văn bản</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.docType === "KHONG_XAC_DINH" ? "Chưa xác định" : currentResult.docType}</span></div>
+              <div className="flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border border-white/5"><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><CalendarDays size={10} /> Ngày ban hành</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.date === "KHONG_XAC_DINH" ? "Không tìm thấy" : currentResult.date}</span></div>
+              <div className="flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border border-white/5"><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><FileSearch size={10} /> Số hiệu</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.soHieu || "Chưa có số hiệu"}</span></div>
+              <div className="col-span-2 flex flex-col justify-center bg-black/10 px-4 py-2 rounded-xl border border-white/5"><div className={`flex items-center gap-1.5 text-[9px] font-black ${t.subtext} mb-0.5 uppercase`}><FileText size={10} /> Trích yếu</div><span className={`font-bold text-sm tracking-wide ${t.text} truncate`}>{currentResult.trichYeu || "Chưa có trích yếu"}</span></div>
             </div>
           ) : <p className={`${t.subtext} italic py-4`}>{loading ? "Đang chờ kết quả từ AI..." : "Chọn file và chạy trích xuất để xem kết quả"}</p>}
         </div>
@@ -150,6 +274,19 @@ export default function OCRStation({ onArchiveSave, t }) {
           <h2 className={`text-xs font-black ${t.subtext} uppercase flex items-center gap-2 tracking-widest mb-3 lg:mb-4 shrink-0`}><Search size={16} className={t.accent} /> Nội dung số hóa (OCR) {currentResult && <span className="normal-case opacity-50 ml-2 truncate max-w-[200px]">- {currentResult.fileName}</span>}</h2>
           <textarea readOnly value={currentResult ? currentResult.content : ""} className={`flex-1 w-full ${t.inputBg} border ${t.border} rounded-2xl p-4 lg:p-6 text-sm font-mono leading-relaxed text-inherit outline-none resize-none shadow-inner transition-all overflow-y-auto whitespace-pre-wrap custom-scrollbar`} placeholder="Văn bản hành chính sau khi nhận dạng sẽ hiển thị ở đây..." />
         </div>
+
+        {/* NÚT ĐỒNG BỘ TOÀN BỘ VÀO CSDL KHI PHIÊN TRÍCH XUẤT XONG */}
+        {files.length > 0 && results.length === files.length && (
+          <button 
+            type="button"
+            onClick={handleSaveAllToArchive}
+            disabled={savingAll}
+            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl transition-all flex justify-center items-center gap-2 text-sm uppercase tracking-wider active:scale-95 shrink-0"
+          >
+            {savingAll ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
+            Lưu toàn bộ vào CSDL ({results.filter(r => r.label !== "ERROR").length} tệp)
+          </button>
+        )}
       </section>
 
       {editingIndex !== null && (

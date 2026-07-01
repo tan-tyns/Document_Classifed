@@ -48,13 +48,15 @@ export default function Header({
         </button>
 
         {/* NÚT DANH SÁCH NHÂN SỰ (MỚI BỔ SUNG) */}
-        <button 
-          type="button"
-          onClick={() => setActiveTab('employees')} 
-          className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${activeTab === 'employees' ? `${t.panel} shadow-md text-inherit` : `${t.subtext} hover:text-inherit`}`}
-        >
-          <Users size={16} /> Nhân sự
-        </button>
+        {user?.role !== 'employee' && (
+          <button 
+            type="button"
+            onClick={() => setActiveTab('employees')} 
+            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${activeTab === 'employees' ? `${t.panel} shadow-md text-inherit` : `${t.subtext} hover:text-inherit`}`}
+          >
+            <Users size={16} /> Nhân sự
+          </button>
+        )}
 
         {/* NÚT CÀI ĐẶT */}
         <button 
